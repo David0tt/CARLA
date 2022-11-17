@@ -93,8 +93,30 @@ def summary_plot(factuals, counterfactuals, data, topn=5, figsize=(15, 7)):
     cont_cols = _most_important_features(diff[cont_cols], topn)
     cat_cols = _most_important_features(diff[cat_cols], topn)
 
-    swarmplot(diff[cont_cols], factuals[cont_cols], axs[0])
-    stripplot(diff[cat_cols], factuals[cat_cols], axs[1])
+    # Skip plotting the swarmplot for continuous variables, if there are none
+    if len(cont_cols) > 0:
+        swarmplot(diff[cont_cols], factuals[cont_cols], axs[0])
+    else:
+        axs[0].text(0.1, 0.55, "Skipping the swarmplot.",
+            verticalalignment="top", horizontalalignment="left",
+            transform=axs[0].transAxes, color="red")
+
+        axs[0].text(0.1, 0.5, "There are no continuous variables in the dataset.",
+                    verticalalignment="top", horizontalalignment="left",
+                    transform=axs[0].transAxes, color="red")
+
+
+    # Skip plotting the stripplot for categorical variables, if there are none
+    if len(cat_cols) > 0:
+        stripplot(diff[cat_cols], factuals[cat_cols], axs[1])
+    else:
+        axs[1].text(0.1, 0.55, "Skipping the stripplot.",
+            verticalalignment="top", horizontalalignment="left",
+            transform=axs[1].transAxes, color="red")
+
+        axs[1].text(0.1, 0.5, "There are no categorical variables in the dataset.",
+                    verticalalignment="top", horizontalalignment="left",
+                    transform=axs[1].transAxes, color="red")
 
     # Resize to create overlap
     fig.set_size_inches(figsize[0], figsize[1])
