@@ -68,6 +68,7 @@ class ARAR(RecourseMethod):
         'inner_max_pgd': False,
         'early_stop': False,
         'binary_cat_features': True,
+        'y_target': 1
     }
 
 
@@ -77,7 +78,6 @@ class ARAR(RecourseMethod):
             raise ValueError(
                 f"{mlmodel.backend} is not in supported backends {supported_backends}"
             )
-
         super().__init__(mlmodel)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu" # TODO fix CUDA
@@ -97,9 +97,14 @@ class ARAR(RecourseMethod):
         self._early_stop = checked_hyperparams["early_stop"]
         self._bce_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
         self._binary_cat_features = checked_hyperparams["binary_cat_features"]
+        self._y_target = checked_hyperparams["y_target"]
         
+        if self._y_target not in [0,1]:
+            raise ValueError(
+                f"{self._y_target} is not a supported target class (0 or 1)"
+            )
 
-    def find_recourse(self, x, cat_feature_indices: List[int], interv_set = None, bounds = None, target=1., robust=False, epsilon=0.1, scm=None, verbose=True):
+    def find_recourse(self, x, cat_feature_indices: List[int], interv_set = None, bounds = None, robust=False, epsilon=0.1, scm=None, verbose=True):
         """
         Find a recourse action for some particular intervention set (implementation of Algorithm 1 in the paper)
         Inputs:     x: torch.Tensor with shape (N, D), negatively classified instances for which to generate recourse
@@ -130,7 +135,7 @@ class ARAR(RecourseMethod):
         ae_tol = 1e-4  # for early stopping
         actions = torch.zeros(x.shape, device=self.device)  # store here valid recourse found so far
 
-        target_vec = torch.ones(x.shape[0], device=self.device) * target  # to feed into the BCE loss
+        target_vec = torch.ones(x.shape[0], device=self.device) * self._y_target  # to feed into the BCE loss
         unfinished = torch.ones(x.shape[0], device=self.device)  # instances for which recourse was not found so far
 
         # Define variable for which to do gradient descent, which can be updated with optimizer
@@ -203,10 +208,12 @@ class ARAR(RecourseMethod):
                 with torch.no_grad():
                     # To continue optimazing, either the counterfactual or the adversarial counterfactual must be
                     # negatively classified
-                                                                                                                   # TODO our model returns floats in [0,1], so we check <= 0.5
-                    pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) <= 0.5  # cf +1 # TODO if we want other target class we have to adapt this
-                    pre_unfinished_2 = self._mlmodel.predict(x_cf) <= 0.5  # cf adversarial
-
+                    if self._y_target == 1:                                                                                               # TODO our model returns floats in [0,1], so we check <= 0.5
+                        pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) <= 0.5  # cf +1 # TODO if we want other target class we have to adapt this
+                        pre_unfinished_2 = self._mlmodel.predict(x_cf) <= 0.5  # cf adversarial
+                    elif self._y_target == 0:
+                        pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) >= 0.5
+                        pre_unfinished_2 = self._mlmodel.predict(x_cf) >= 0.5
 
                     pre_unfinished = torch.logical_or(pre_unfinished_1, pre_unfinished_2)
 
@@ -296,8 +303,10 @@ class ARAR(RecourseMethod):
         # everywhere where we have x_cf
 
         pred = self._mlmodel.predict(cfs)
-
-        df_cfs = check_counterfactuals(self._mlmodel, df_cfs, factuals.index)
+        negative_label = 0
+        if self._y_target == 0:
+            negative_label =1
+        df_cfs = check_counterfactuals(self._mlmodel, df_cfs, factuals.index, negative_label=negative_label)
 
 
         df_cfs = self._mlmodel.get_ordered_features(df_cfs)
