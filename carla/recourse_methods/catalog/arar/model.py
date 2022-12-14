@@ -54,6 +54,7 @@ class ARAR(RecourseMethod):
         * "inner_max_pgd": bool, whether to use PGD or a first order approximation (FGSM) to solve the inner max
         * "early_stop": bool, whether to do early stopping for the inner iterations
         * "binary_cat_features": bool, default: True
+        * "epsilon": float, amount of uncertainty, maximum perturbation magnitude (2-norm)
             If true, the encoding of x is done by drop_if_binary.
 
     """
@@ -68,7 +69,8 @@ class ARAR(RecourseMethod):
         'inner_max_pgd': False,
         'early_stop': False,
         'binary_cat_features': True,
-        'y_target': 1
+        'y_target': 1,
+        'epsilon': 0.05
     }
 
 
@@ -98,13 +100,14 @@ class ARAR(RecourseMethod):
         self._bce_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
         self._binary_cat_features = checked_hyperparams["binary_cat_features"]
         self._y_target = checked_hyperparams["y_target"]
+        self._epsilon = checked_hyperparams["epsilon"]
         
         if self._y_target not in [0,1]:
             raise ValueError(
                 f"{self._y_target} is not a supported target class (0 or 1)"
             )
 
-    def find_recourse(self, x, cat_feature_indices: List[int], interv_set = None, bounds = None, robust=False, epsilon=0.1, scm=None, verbose=True):
+    def find_recourse(self, x, cat_feature_indices: List[int], interv_set = None, bounds = None, robust=False, scm=None, verbose=True):
         """
         Find a recourse action for some particular intervention set (implementation of Algorithm 1 in the paper)
         Inputs:     x: torch.Tensor with shape (N, D), negatively classified instances for which to generate recourse
@@ -112,7 +115,6 @@ class ARAR(RecourseMethod):
                     bounds: torch.Tensor with shape (N, D, 2), containing the min and max interventions
                     target: float, target label for the BCE loss (normally 1, that is, favourably classifier)
                     robust: bool, whether to guard against epsilon uncertainty
-                    epsilon: float, amount of uncertainty, maximum perturbation magnitude (2-norm)
                     scm: type scm.SCM, structural causal model governing the causal relationships between features
                     interv_set: list of int, indices of the actionable features
                     verbose: bool
@@ -162,9 +164,12 @@ class ARAR(RecourseMethod):
         # Solve the first order approximation to the inner maximization problem
         def solve_first_order_approx(x_og, x_pertb, delta, target_vec):
             x_adv = perturbation_model(x_og, x_pertb, delta.detach())  # x_pertb is 0, only to backprop
-            loss_x = torch.mean(self._bce_loss(self._mlmodel(x_adv), target_vec))
+            loss_x = torch.mean(self._bce_loss(self._mlmodel.predict(x_adv).squeeze(), target_vec))
             grad = torch.autograd.grad(loss_x, x_pertb, create_graph=False)[0]
-            return grad / torch.linalg.norm(grad, dim=-1, keepdims=True) * epsilon  # akin to FGSM attack
+            #sometime the grad is zero therefore it is not possible to normalize it
+            sum = torch.sum(grad, dim=-1)
+            grad[sum!=0] = grad [sum!=0]/ torch.linalg.norm(grad[sum!=0], dim=-1, keepdims=True) * self._epsilon
+            return grad  # akin to FGSM attack
 
 
 
@@ -185,7 +190,7 @@ class ARAR(RecourseMethod):
 
                         for _ in range(10):
                             optimizer2.zero_grad()
-                            loss_pertb = torch.mean(self._bce_loss(self._mlmodel(x_og + pertb + delta.detach()),
+                            loss_pertb = torch.mean(self._bce_loss(self._mlmodel.predict(x_og + pertb + delta.detach()).squeeze(),
                                                                   torch.zeros(x.shape[0])))
                             loss_pertb.backward()
                             optimizer2.step()
@@ -216,11 +221,10 @@ class ARAR(RecourseMethod):
                         pre_unfinished_2 = self._mlmodel.predict(x_cf) >= 0.5
 
                     pre_unfinished = torch.logical_or(pre_unfinished_1, pre_unfinished_2)
-
+                    
                     # Add new solution to solutions
                     pre_unfinished = pre_unfinished.squeeze() # TODO added for compatability, since the our model predict returns shape=[50, 1] and theirs returned shape=[50]
                     new_solution = torch.logical_and(unfinished, torch.logical_not(pre_unfinished))
-
                     actions[new_solution] = torch.clone(delta[new_solution].detach())
                     unfinished = torch.logical_and(pre_unfinished, unfinished)
 
@@ -260,7 +264,6 @@ class ARAR(RecourseMethod):
         valid = torch.logical_not(unfinished).detach().cpu().numpy()
         cfs = recourse_model(x_og, actions).detach().cpu().numpy()
         cost = torch.sum(torch.abs(actions), -1).detach().cpu().numpy()
-
         return actions.detach().cpu().numpy(), valid, cost, cfs
 
 
@@ -273,7 +276,6 @@ class ARAR(RecourseMethod):
         # should be min-max normalized with the same range.
         # It's expected that there is a single counterfactual per factual,
         # however in case a counterfactual cannot be found it should be NaN.
-
         factuals = self._mlmodel.get_ordered_features(factuals)
         
         encoded_feature_names = self._mlmodel.data.encoder.get_feature_names(
@@ -290,7 +292,7 @@ class ARAR(RecourseMethod):
 
 
         # cfs = self.find_recourse(factuals, inverv_set, bounds) # TODO
-        actions, valid, cost, cfs = self.find_recourse(x, cat_features_indices)
+        actions, valid, cost, cfs = self.find_recourse(x, cat_features_indices, robust=True)
 
 
         df_cfs = pd.DataFrame(cfs, columns=factuals.columns)
