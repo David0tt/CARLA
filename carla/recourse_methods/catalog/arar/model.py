@@ -54,6 +54,7 @@ class ARAR(RecourseMethod):
         * "inner_max_pgd": bool, whether to use PGD or a first order approximation (FGSM) to solve the inner max
         * "early_stop": bool, whether to do early stopping for the inner iterations
         * "binary_cat_features": bool, default: True
+        * "y_target": [0,1], the target class.
         * "epsilon": float, amount of uncertainty, maximum perturbation magnitude (2-norm)
             If true, the encoding of x is done by drop_if_binary.
 
@@ -191,15 +192,16 @@ class ARAR(RecourseMethod):
                         for _ in range(10):
                             optimizer2.zero_grad()
                             loss_pertb = torch.mean(self._bce_loss(self._mlmodel.predict(x_og + pertb + delta.detach()).squeeze(),
-                                                                  torch.zeros(x.shape[0])))
+                                                                #   torch.zeros(x.shape[0])))
+                                                                  target_vec))
                             loss_pertb.backward()
                             optimizer2.step()
 
                             # Project to L2 ball, and with the linearity mask
                             with torch.no_grad():
                                 norm = torch.linalg.norm(pertb, dim=-1)
-                                too_large = norm > epsilon
-                                pertb[too_large] = pertb[too_large] / norm[too_large, None] * epsilon
+                                too_large = norm > self._epsilon
+                                pertb[too_large] = pertb[too_large] / norm[too_large, None] * self._epsilon
                             x_cf = x_og + pertb.detach() + delta
 
                             x_cf = reconstruct_encoding_constraints(x_cf, cat_feature_indices, self._binary_cat_features)
@@ -213,7 +215,7 @@ class ARAR(RecourseMethod):
                 with torch.no_grad():
                     # To continue optimazing, either the counterfactual or the adversarial counterfactual must be
                     # negatively classified
-                    if self._y_target == 1:                                                                                               # TODO our model returns floats in [0,1], so we check <= 0.5
+                    if self._y_target == 1:                                                                    # TODO our model returns floats in [0,1], so we check <= 0.5
                         pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) <= 0.5  # cf +1 # TODO if we want other target class we have to adapt this
                         pre_unfinished_2 = self._mlmodel.predict(x_cf) <= 0.5  # cf adversarial
                     elif self._y_target == 0:
