@@ -43,21 +43,33 @@ class ARAR(RecourseMethod):
     Notes
     -----
     - hyperparams
-        Hyperparameter contains important information for the recourse method to initialize.
-        Please make sure to pass all values as dict with the following keys.
+        Hyperparameter contains important information for the recourse method to
+        initialize. Please make sure to pass all values as dict with the
+        following keys.
 
         * "lr": float, learning rate of Adam
         * "lambd_init": float, initial lambda regulating BCE loss and L2 loss
-        * "decay_rate": float < 1, at each outer iteration lambda is decreased by a factor of "decay_rate"
-        * "inner_iters": int, number of inner optimization steps (for a fixed lambda)
-        * "outer_iters": int, number of outer optimization steps (where lambda is decreased)
-        * "inner_max_pgd": bool, whether to use PGD or a first order approximation (FGSM) to solve the inner max
-        * "early_stop": bool, whether to do early stopping for the inner iterations
-        * "binary_cat_features": bool, default: True If true, the encoding of x is done by drop_if_binary
+        * "decay_rate": float < 1, at each outer iteration lambda is decreased
+          by a factor of "decay_rate"
+        * "inner_iters": int, number of inner optimization steps (for a fixed
+          lambda)
+        * "outer_iters": int, number of outer optimization steps (where lambda
+          is decreased)
+        * "inner_max_pgd": bool, whether to use PGD or a first order
+          approximation (FGSM) to solve the inner max
+        * "early_stop": bool, whether to do early stopping for the inner
+          iterations
+        * "binary_cat_features": bool, default: True If true, the encoding of x
+          is done by drop_if_binary
         * "y_target": [0,1], the target class.
-        * "epsilon": float, amount of uncertainty, maximum perturbation magnitude (2-norm)
-        * "robust": bool, default: True, whether to find robust counterfactuals, d
+        * "epsilon": float, amount of uncertainty, maximum perturbation
+          magnitude (2-norm)
+        * "robust": bool, default: True, whether to find robust counterfactuals
         * "verbose": bool, default: True, whether to print progress bar
+
+    .. [1] Dominguez-Olmedo, Ricardo, Amir H. Karimi, and Bernhard Schölkopf.
+        "On the adversarial robustness of causal algorithmic recourse."
+        International Conference on Machine Learning. PMLR, 2022.
 
     """
     _DEFAULT_HYPERPARAMS = {
@@ -84,7 +96,7 @@ class ARAR(RecourseMethod):
             )
         super().__init__(mlmodel)
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu" # TODO fix CUDA
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
         checked_hyperparams = merge_default_parameters(
@@ -110,9 +122,9 @@ class ARAR(RecourseMethod):
                 f"{self._y_target} is not a supported target class (0 or 1)"
             )
 
-    def find_recourse(self, x: torch.Tensor, cat_feature_indices: List[int], bounds: torch.Tensor = None ):
+    def _find_recourse(self, x: torch.Tensor, cat_feature_indices: List[int], bounds: torch.Tensor = None ):
         """
-        Find a recourse action for some particular intervention set (implementation of Algorithm 1 in the paper)
+        Find a recourse action (implementation of Algorithm 1 in the paper)
         Inputs:     x: torch.Tensor with shape (N, D), negatively classified instances for which to generate recourse
                     cat_features_indices: List[int], List of positions of categorical features in x.
                     bounds: torch.Tensor with shape (N, D, 2),default: None containing the min and max interventions 
@@ -122,10 +134,6 @@ class ARAR(RecourseMethod):
                     cfs: np.array with shape (N, D), counterfactuals found (follow from x and actions)
         """
         D = x.shape[1]
-
-        # print("x", x)
-
-        # x_og = torch.Tensor(x, device=self.device)
 
         x_og = x.clone()
 
@@ -204,8 +212,8 @@ class ARAR(RecourseMethod):
                 with torch.no_grad():
                     # To continue optimazing, either the counterfactual or the adversarial counterfactual must be
                     # negatively classified
-                    if self._y_target == 1:                                                                    # TODO our model returns floats in [0,1], so we check <= 0.5
-                        pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) <= 0.5  # cf +1 # TODO if we want other target class we have to adapt this
+                    if self._y_target == 1:
+                        pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) <= 0.5
                         pre_unfinished_2 = self._mlmodel.predict(x_cf) <= 0.5  # cf adversarial
                     elif self._y_target == 0:
                         pre_unfinished_1 = self._mlmodel.predict(recourse_model(x_og, delta.detach())) >= 0.5
@@ -214,13 +222,13 @@ class ARAR(RecourseMethod):
                     pre_unfinished = torch.logical_or(pre_unfinished_1, pre_unfinished_2)
                     
                     # Add new solution to solutions
-                    pre_unfinished = pre_unfinished.squeeze() # TODO added for compatability, since the our model predict returns shape=[50, 1] and theirs returned shape=[50]
+                    pre_unfinished = pre_unfinished.squeeze()
                     new_solution = torch.logical_and(unfinished, torch.logical_not(pre_unfinished))
                     actions[new_solution] = torch.clone(delta[new_solution].detach())
                     unfinished = torch.logical_and(pre_unfinished, unfinished)
 
                 # Compute loss
-                clf_loss = self._bce_loss(self._mlmodel.predict(x_cf).squeeze(), target_vec) # TODO squeeze added for compatability
+                clf_loss = self._bce_loss(self._mlmodel.predict(x_cf).squeeze(), target_vec)
                 l1_loss = torch.sum(torch.abs(delta), -1)
                 loss = clf_loss + lambd * l1_loss
 
@@ -276,26 +284,13 @@ class ARAR(RecourseMethod):
             factuals.columns.get_loc(feature) for feature in encoded_feature_names
         ]
 
-
-        # device = "cpu"
-
         x = torch.from_numpy(factuals.to_numpy().astype(np.float32)).to(self.device)
-
-
-        # cfs = self.find_recourse(factuals, inverv_set, bounds) # TODO
-        actions, valid, cost, cfs = self.find_recourse(x, cat_features_indices, bounds)
-
-
+        actions, valid, cost, cfs = self._find_recourse(x, cat_features_indices, bounds)
         df_cfs = pd.DataFrame(cfs, columns=factuals.columns)
-
-
         pred = self._mlmodel.predict(cfs)
         negative_label = 0
         if self._y_target == 0:
             negative_label =1
         df_cfs = check_counterfactuals(self._mlmodel, df_cfs, factuals.index, negative_label=negative_label)
-
-
         df_cfs = self._mlmodel.get_ordered_features(df_cfs)
-
         return df_cfs
