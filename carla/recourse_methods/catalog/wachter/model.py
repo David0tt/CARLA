@@ -9,6 +9,8 @@ from carla.recourse_methods.processing import (
     merge_default_parameters,
 )
 
+from tqdm import tqdm
+
 
 class Wachter(RecourseMethod):
     """
@@ -104,7 +106,9 @@ class Wachter(RecourseMethod):
             factuals.columns.get_loc(feature) for feature in encoded_feature_names
         ]
 
-        df_cfs = factuals.apply(
+        tqdm.pandas()
+
+        df_cfs = factuals.progress_apply(
             lambda x: wachter_recourse(
                 self._mlmodel.raw_model,
                 x.reshape((1, -1)),
